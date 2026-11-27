@@ -1,0 +1,40 @@
+const secured = [{ bearerAuth: [] }];
+const ok = { '200': { description: 'Success' }, '400': { description: 'Invalid request' }, '401': { description: 'Authentication required' }, '403': { description: 'Insufficient role or vendor approval' } };
+const authBody = { required: true, content: { 'application/json': { schema: { type: 'object', required: ['email', 'password'], properties: { email: { type: 'string', format: 'email' }, password: { type: 'string', minLength: 8, maxLength: 128 } } } } } };
+const id = (name: string) => [{ name, in: 'path', required: true, schema: { type: 'string', pattern: '^[0-9a-fA-F]{24}$' } }];
+const objectBody = (properties: object, required: string[] = []) => ({ required: true, content: { 'application/json': { schema: { type: 'object', required, properties } } } });
+
+export const openapi = {
+  openapi: '3.0.3',
+  info: { title: 'MVM Marketplace API', version: '1.0.0', description: 'Phases 1–3 API. Money is integer INR paise. Checkout transitions require MongoDB replica-set transactions.' },
+  servers: [{ url: '/api/v1' }],
+  components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
+  paths: {
+    '/auth/register': { post: { summary: 'Register a customer (email and password; password 8–128 chars)', requestBody: authBody, responses: { ...ok, '201': { description: 'Customer created' }, '409': { description: 'Email already registered' } } } },
+    '/auth/login': { post: { summary: 'Login; returns access token and HttpOnly refresh cookie', requestBody: authBody, responses: { ...ok, '200': { description: 'Authenticated' } } } },
+    '/auth/refresh': { post: { summary: 'Rotate refresh cookie', responses: { ...ok, '200': { description: 'Token rotated' } } } },
+    '/auth/logout': { post: { summary: 'Revoke refresh cookie', responses: { '204': { description: 'Logged out' } } } },
+    '/auth/me': { get: { summary: 'Get authenticated user', security: secured, responses: ok } },
+    '/vendors/register': { post: { summary: 'Create pending vendor application', requestBody: objectBody({ email: { type: 'string', format: 'email' }, password: { type: 'string', minLength: 8 }, businessName: { type: 'string', minLength: 2, maxLength: 120 } }, ['email', 'password', 'businessName']), responses: { ...ok, '201': { description: 'Vendor submitted for approval' } } } },
+    '/vendors/me': { get: { summary: 'Get own vendor profile', security: secured, responses: ok }, patch: { summary: 'Update business name', security: secured, requestBody: objectBody({ businessName: { type: 'string', minLength: 2, maxLength: 120 } }, ['businessName']), responses: ok } },
+    '/vendors/me/store': { put: { summary: 'Create or update own store (approved vendor)', security: secured, requestBody: objectBody({ name: { type: 'string', minLength: 2, maxLength: 100 }, description: { type: 'string', maxLength: 2000 } }, ['name']), responses: ok } },
+    '/products': { get: { summary: 'List published products; q, category, page, limit (1–100), sort (newest/price_asc/price_desc)', parameters: [{ name: 'q', in: 'query', schema: { type: 'string', maxLength: 100 } }, { name: 'category', in: 'query', schema: { type: 'string' } }, { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } }, { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } }, { name: 'sort', in: 'query', schema: { type: 'string', enum: ['newest', 'price_asc', 'price_desc'] } }], responses: ok } },
+    '/products/{productId}': { get: { summary: 'Get published product', parameters: id('productId'), responses: ok } },
+    '/categories': { get: { summary: 'List active categories', responses: ok } },
+    '/stores/{storeSlug}': { get: { summary: 'Get active store and published products', parameters: [{ name: 'storeSlug', in: 'path', required: true, schema: { type: 'string' } }], responses: ok } },
+    '/vendors/me/products': { get: { summary: 'List own products', security: secured, responses: ok }, post: { summary: 'Create own product (pending moderation); pricePaise integer >0, stock integer >=0', security: secured, requestBody: objectBody({ name: { type: 'string', maxLength: 160 }, description: { type: 'string', maxLength: 5000 }, categoryId: { type: 'string' }, pricePaise: { type: 'integer', minimum: 1 }, stock: { type: 'integer', minimum: 0 } }, ['name', 'categoryId', 'pricePaise', 'stock']), responses: { ...ok, '201': { description: 'Product created' } } } },
+    '/vendors/me/products/{productId}': { patch: { summary: 'Update own product; returns to pending moderation', security: secured, parameters: id('productId'), requestBody: objectBody({ name: { type: 'string' }, description: { type: 'string' }, categoryId: { type: 'string' }, pricePaise: { type: 'integer' }, stock: { type: 'integer' } }), responses: ok }, delete: { summary: 'Unpublish own product', security: secured, parameters: id('productId'), responses: ok } },
+    '/admin/vendors': { get: { summary: 'List vendor applications', security: secured, responses: ok } },
+    '/admin/vendors/{vendorId}/status': { patch: { summary: 'Set vendor status to approved, rejected, or suspended', security: secured, parameters: id('vendorId'), requestBody: objectBody({ status: { type: 'string', enum: ['approved', 'rejected', 'suspended'] } }, ['status']), responses: ok } },
+    '/admin/categories': { post: { summary: 'Create category', security: secured, requestBody: objectBody({ name: { type: 'string' }, slug: { type: 'string', pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' } }, ['name', 'slug']), responses: { ...ok, '201': { description: 'Created' } } } },
+    '/admin/products': { get: { summary: 'List products for moderation', security: secured, responses: ok } },
+    '/admin/products/{productId}/moderation': { patch: { summary: 'Publish or reject product', security: secured, parameters: id('productId'), requestBody: objectBody({ status: { type: 'string', enum: ['published', 'rejected'] } }, ['status']), responses: ok } },
+    '/cart': { get: { summary: 'Get own cart', security: secured, responses: ok }, put: { summary: 'Replace cart; each item has productId and quantity 1–100; at most 100 unique items', security: secured, requestBody: objectBody({ items: { type: 'array', items: { type: 'object', required: ['productId', 'quantity'], properties: { productId: { type: 'string' }, quantity: { type: 'integer', minimum: 1, maximum: 100 } } } } }, ['items']), responses: ok } },
+    '/orders/checkout': { post: { summary: 'Create idempotent multi-vendor order using server prices; reserves stock transactionally', security: secured, parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string', minLength: 1, maxLength: 128 } }], requestBody: objectBody({ items: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['productId', 'quantity'], properties: { productId: { type: 'string' }, quantity: { type: 'integer', minimum: 1, maximum: 100 } } } } }, ['items']), responses: { ...ok, '201': { description: 'Order and pending simulated payment created' }, '409': { description: 'Product unavailable or stock insufficient' } } } },
+    '/orders': { get: { summary: 'List own orders', security: secured, responses: ok } },
+    '/orders/{orderId}': { get: { summary: 'Get own order', security: secured, parameters: id('orderId'), responses: ok } },
+    '/orders/{orderId}/cancel': { post: { summary: 'Cancel unpaid order and restore stock transactionally', security: secured, parameters: id('orderId'), responses: { ...ok, '409': { description: 'Order is not cancellable' } } } },
+    '/payments/{paymentId}/confirm': { post: { summary: 'Confirm simulated payment; no card details; repeat confirmation is idempotent', security: secured, parameters: id('paymentId'), responses: { ...ok, '409': { description: 'Invalid payment/order state' } } } },
+    '/payments/{paymentId}': { get: { summary: 'Get own payment', security: secured, parameters: id('paymentId'), responses: ok } },
+  },
+} as const;

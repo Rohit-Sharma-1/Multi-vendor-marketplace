@@ -1,0 +1,50 @@
+import express, { NextFunction, Request, Response } from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
+import { allowedOrigins, env } from './config/env';
+import { logger } from './config/logger';
+import { AppError } from './common/errors';
+import { authRouter } from './modules/auth';
+import { vendorRouter, adminVendorRouter } from './modules/vendors';
+import { catalogRouter, adminCatalogRouter } from './modules/catalog';
+import { cartRouter, orderRouter, paymentRouter } from './modules/orders';
+import mongoose from 'mongoose';
+import { openapi } from './docs/openapi';
+
+const app = express();
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(cors({ origin(origin, callback) { if (!origin || allowedOrigins.includes(origin)) callback(null, true); else callback(new Error('Origin is not allowed by CORS')); }, credentials: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
+app.use((req, _res, next) => { logger.info({ method: req.method, path: req.path }, 'request'); next(); });
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false });
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/ready', (_req, res) => {
+  const ready = mongoose.connection.readyState === 1;
+  res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready' });
+});
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapi));
+app.use('/api/v1/auth', authLimiter, authRouter);
+app.use('/api/v1/vendors', vendorRouter);
+app.use('/api/v1', catalogRouter);
+app.use('/api/v1/cart', cartRouter);
+app.use('/api/v1/orders', orderRouter);
+app.use('/api/v1/payments', paymentRouter);
+app.use('/api/v1/admin/vendors', adminVendorRouter);
+app.use('/api/v1/admin', adminCatalogRouter);
+app.use((_req, _res, next) => next(new AppError(404, 'NOT_FOUND', 'Route not found')));
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof AppError) return res.status(err.status).json({ error: { code: err.code, message: err.message } });
+  if (err instanceof mongoose.Error.ValidationError) return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: err.message } });
+  if (err instanceof mongoose.Error.CastError) return res.status(400).json({ error: { code: 'INVALID_ID', message: 'Invalid identifier' } });
+  if (err && typeof err === 'object' && 'issues' in err) return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Request validation failed', details: (err as { issues: unknown }).issues } });
+  if (err && typeof err === 'object' && 'code' in err && (err as { code?: number }).code === 11000) return res.status(409).json({ error: { code: 'DUPLICATE_RESOURCE', message: 'Resource already exists' } });
+  logger.error({ err }, 'Unhandled request error');
+  return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } });
+});
+
+export default app;
